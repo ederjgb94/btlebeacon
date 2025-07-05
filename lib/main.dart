@@ -54,9 +54,25 @@ class _MyHomePageState extends State<MyHomePage> {
     super.initState();
     // Poner el UID predeterminado
     _uidController.text = 'FDA50693A4E24FB1AFCFC6EB07647825';
+
+    // Iniciar monitoreo del estado del Bluetooth
+    FlutterBluePlus.adapterState.listen((state) {
+      if (mounted) {
+        setState(() {
+          // Actualizamos el status solo si no estamos escaneando
+          if (!_isScanning) {
+            if (state == BluetoothAdapterState.on) {
+              _status = 'Listo para escanear';
+            } else if (state == BluetoothAdapterState.off) {
+              _status = 'Bluetooth desactivado';
+            }
+          }
+        });
+      }
+    });
   }
 
-  Future<void> _requestPermissions() async {
+  Future<bool> _requestPermissions() async {
     // Para iOS, verificar permisos específicos
     if (Theme.of(context).platform == TargetPlatform.iOS) {
       Map<Permission, PermissionStatus> statuses = await [
@@ -70,7 +86,7 @@ class _MyHomePageState extends State<MyHomePage> {
           _status =
               'Permisos necesarios denegados. Ve a Configuración > Privacidad';
         });
-        return;
+        return false;
       }
     } else {
       // Para Android
@@ -86,13 +102,36 @@ class _MyHomePageState extends State<MyHomePage> {
         setState(() {
           _status = 'Permisos de Bluetooth denegados';
         });
-        return;
+        return false;
       }
     }
+
+    // Intentar activar Bluetooth si está desactivado
+    if (await FlutterBluePlus.isSupported) {
+      BluetoothAdapterState state = await FlutterBluePlus.adapterState.first;
+      if (state != BluetoothAdapterState.on) {
+        // Solo para Android podemos intentar activarlo
+        if (Theme.of(context).platform == TargetPlatform.android) {
+          try {
+            await FlutterBluePlus.turnOn();
+            // Esperar un momento para que se active
+            await Future.delayed(const Duration(seconds: 1));
+          } catch (e) {
+            print('No se pudo activar Bluetooth automáticamente: $e');
+          }
+        }
+      }
+    }
+
+    return true;
   }
 
   Future<void> _discover() async {
-    await _requestPermissions();
+    // Solicitar permisos y verificar que se obtuvieron
+    bool permissionsGranted = await _requestPermissions();
+    if (!permissionsGranted) {
+      return; // Si no se obtuvieron permisos, detenerse
+    }
 
     if (await FlutterBluePlus.isSupported == false) {
       setState(() {
@@ -101,20 +140,41 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
 
-    // Verificar el estado del adaptador Bluetooth
-    BluetoothAdapterState adapterState =
-        await FlutterBluePlus.adapterState.first;
-    if (adapterState != BluetoothAdapterState.on) {
-      setState(() {
-        _status = 'Por favor, activa el Bluetooth';
-      });
-      return;
+    // Asegurar que obtenemos el estado actual del adaptador Bluetooth
+    try {
+      // Primero intentamos actualizar el estado
+      await FlutterBluePlus.adapterState
+          .timeout(
+            const Duration(seconds: 2),
+            onTimeout: (sink) => sink.add(BluetoothAdapterState.unknown),
+          )
+          .first;
+
+      // Luego obtenemos el estado actual
+      BluetoothAdapterState adapterState =
+          await FlutterBluePlus.adapterState.first;
+
+      if (adapterState != BluetoothAdapterState.on) {
+        // Verificar de nuevo el estado por si acaba de cambiar
+        await Future.delayed(const Duration(milliseconds: 500));
+        adapterState = await FlutterBluePlus.adapterState.first;
+
+        if (adapterState != BluetoothAdapterState.on) {
+          setState(() {
+            _status = 'Por favor, activa el Bluetooth';
+          });
+          return;
+        }
+      }
+    } catch (e) {
+      print('Error al verificar el estado del Bluetooth: $e');
+      // Intentar continuar de todas formas si el Bluetooth podría estar activo
     }
 
     setState(() {
       _isScanning = true;
       _devices.clear();
-      _status = 'Escaneando dispositivos BLE...';
+      _status = 'Escaneando dispositivos BqLE...';
     });
 
     String targetUid = _uidController.text.toUpperCase();
